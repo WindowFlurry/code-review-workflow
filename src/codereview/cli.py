@@ -318,6 +318,37 @@ def review(
 
 
 @app.command()
+def workflow(
+    requirement: Annotated[str, typer.Argument(help="用一句自然语言描述你要什么。")],
+    max_rounds: Annotated[int, typer.Option("--max-rounds", help="最多修几轮。")] = 3,
+    out: Annotated[Path | None, typer.Option(help="产物目录。")] = None,
+    formats: Annotated[str, typer.Option(help="逗号分隔：console,md,json")] = "console,md",
+    quiet: Annotated[bool, typer.Option("-q", "--quiet", help="只打印报告。")] = False,
+    verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
+) -> None:
+    """跑一次「编码 → 审查 → 修复」多 Agent 工作流。
+
+    你给一句需求，编码 Agent 写出代码，审查 Agent（复用作业一）挑毛病，
+    修复 Agent 按报告改，然后回到审查 —— 直到没有高危问题或到达轮数上限。
+
+    例：codereview workflow "写一个函数，判断字符串是不是回文"
+    """
+    from .workflow.runner import run as run_workflow_cli
+
+    try:
+        run_workflow_cli(
+            requirement,
+            max_rounds=max_rounds,
+            out_dir=out,
+            formats=[f.strip() for f in formats.split(",") if f.strip()],
+            verbose=verbose,
+            quiet=quiet,
+        )
+    except CodeReviewError as exc:
+        _fail(str(exc))
+
+
+@app.command()
 def ask(
     question: Annotated[str | None, typer.Argument(help="Question; omit for a REPL.")] = None,
     thread: Annotated[str, typer.Option(help="Thread id of a previous review.")] = "default",

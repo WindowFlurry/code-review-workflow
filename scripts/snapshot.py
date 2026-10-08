@@ -14,6 +14,7 @@ Python 在 Windows 上通过宽字符 API 传参数，不存在这个问题。
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import subprocess
 import sys
@@ -60,10 +61,9 @@ def _describe(path: Path) -> tuple[int, float]:
     for item in path.rglob("*"):
         if item.is_file():
             count += 1
-            try:
+            # 少数文件可能正被占用而读不到大小，跳过就行，不该因此中断统计。
+            with contextlib.suppress(OSError):
                 total += item.stat().st_size
-            except OSError:
-                pass
     return count, total / (1024 * 1024)
 
 
@@ -140,7 +140,6 @@ pause
 
 
 def _write_readme(version: str, destination: Path, file_count: int, size_mb: float) -> Path:
-    project = Path(__file__).resolve().parents[1]
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     content = f"""这是「代码审查助手」的备份（版本 {version}）

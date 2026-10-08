@@ -28,7 +28,12 @@ from ..errors import ConfigError
 logger = logging.getLogger(__name__)
 
 #: The pipeline's model roles. Each maps to a different reasoning configuration.
-Role = Literal["planner", "reviewer", "verifier", "qa", "reporter"]
+#:
+#: ``coder`` and ``fixer`` belong to the homework-2 workflow (see
+#: ``codereview.workflow``). They were added rather than reusing an existing
+#: role so that the two projects stay separable in logs and, if the thinking
+#: restriction is ever lifted, can be tuned independently.
+Role = Literal["planner", "reviewer", "verifier", "qa", "reporter", "coder", "fixer"]
 
 #: Roles whose output must be deterministic -- they emit structured JSON, and
 #: creative variation there is pure downside.
