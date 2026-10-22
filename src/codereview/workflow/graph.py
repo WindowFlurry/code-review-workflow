@@ -35,10 +35,19 @@ from pathlib import Path
 from langgraph.graph import END, START, StateGraph
 
 from ..logging_setup import new_run_dir
-from .nodes import code_node, decide, fix_node, report_node, review_node
+from .nodes import code_node, decide, fix_node, report_node, review_node, seed_workspace
 from .state import WorkflowState, empty_workflow_state
 
 logger = logging.getLogger(__name__)
+
+
+def route_start(state: WorkflowState) -> str:
+    """入口分流。
+
+    状态里已经有代码了（用户自己写的），就直接进审查，跳过编码 Agent。
+    否则从编码开始。
+    """
+    return "review" if state.get("code", "").strip() else "code"
 
 
 def after_code(state: WorkflowState) -> str:
@@ -55,7 +64,12 @@ def build_workflow(*, checkpointer=None):
     graph.add_node("fix", fix_node)
     graph.add_node("report", report_node)
 
-    graph.add_edge(START, "code")
+    # 入口分流：用户提供了代码就直接审查，没提供就让编码 Agent 先写。
+    graph.add_conditional_edges(
+        START,
+        route_start,
+        {"code": "code", "review": "review"},
+    )
 
     # 编码失败就不往下走了 —— 没有代码，审查无从谈起。
     graph.add_conditional_edges(
@@ -83,6 +97,7 @@ def build_workflow(*, checkpointer=None):
 def run_workflow(
     requirement: str,
     *,
+    code: str = "",
     workspace: Path | str | None = None,
     run_id: str = "workflow",
     max_rounds: int = 3,
@@ -93,8 +108,10 @@ def run_workflow(
 
     Args:
         requirement: 自然语言需求。
-        workspace: 工作目录，编码 Agent 会在这里写 ``solution.py``。
-            ``None`` 表示在 ``runs/workflow-<时间戳>/workspace`` 下新建一个。
+        code: 用户自己写的代码。给了就从**审查**开始，跳过编码 Agent；
+            没给就让编码 Agent 先写。
+        workspace: 工作目录，代码会写在这里的 ``solution.py``。
+            ``None`` 表示在产物目录下新建一个。
         run_id: 用来区分每次运行，会写进日志和线程 id。
         max_rounds: 修复轮数上限。
         out_dir: 产物目录，``None`` 表示自动建一个带时间戳的。
@@ -105,13 +122,19 @@ def run_workflow(
     if out_dir is None:
         out_dir = new_run_dir(Path("runs"), label="workflow")
 
+    out_dir = Path(out_dir)
+
     if workspace is None:
         workspace = out_dir / "workspace"
 
     workspace = Path(workspace)
     workspace.mkdir(parents=True, exist_ok=True)
 
-    logger.info("工作流启动：需求=%r，工作目录=%s", requirement[:40], workspace)
+    if code.strip():
+        seed_workspace(workspace, out_dir, code)
+        logger.info("工作流启动（代码由用户提供，%d 行）", len(code.splitlines()))
+    else:
+        logger.info("工作流启动：需求=%r，工作目录=%s", requirement[:40], workspace)
 
     graph = build_workflow(checkpointer=checkpointer)
     initial = empty_workflow_state(
@@ -120,6 +143,7 @@ def run_workflow(
         out_dir=str(out_dir),
         run_id=run_id,
         max_rounds=max_rounds,
+        initial_code=code,
     )
 
     # recursion_limit 给得宽一些：每一轮是「审查 + 修复」两个节点，再加上

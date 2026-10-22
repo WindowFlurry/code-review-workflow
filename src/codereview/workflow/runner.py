@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
@@ -28,9 +29,29 @@ from .state import WorkflowReport, actionable_count, severe_count
 logger = logging.getLogger(__name__)
 
 
+def _make_run_dir(out_dir: Path | None, settings: Settings) -> Path:
+    """给这次运行安排一个独立目录。
+
+    用户指定 ``--out`` 时，在它下面再建一层时间戳子目录，而不是直接写进去。
+
+    直接写进去会出事：同一个目录被多次运行共用，文件互相覆盖，轮数少的那次
+    还会把轮数多的那次留下的快照剩在目录里 —— 结果就是一堆来自不同运行的
+    文件混在一起，看起来完全对不上。实测踩过这个坑。
+    """
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    if out_dir is None:
+        return new_run_dir(settings.run_dir, label="workflow")
+
+    run_dir = Path(out_dir) / stamp
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
 def run(
     requirement: str,
     *,
+    code: str = "",
     max_rounds: int = 3,
     out_dir: Path | None = None,
     formats: list[str] | None = None,
@@ -43,8 +64,11 @@ def run(
 
     Args:
         requirement: 自然语言需求，例如「写一个函数判断回文」。
+            用户提供了 ``code`` 时，这一项只作为背景说明，可以留空。
+        code: 用户自己写的代码。给了就跳过编码 Agent，直接进入审查。
         max_rounds: 修复轮数上限。
-        out_dir: 产物目录，``None`` 表示在 runs 下自动建一个带时间戳的。
+        out_dir: 产物目录的父目录。每次运行会在它下面再建一个带时间戳的
+            子目录；``None`` 表示在 ``runs`` 下自动建。
         formats: 要写哪些格式，可选 ``console`` / ``md`` / ``json``。
         verbose: 打开 DEBUG 日志。
         quiet: 只打印报告。
@@ -67,20 +91,29 @@ def run(
             "运行 `codereview doctor` 可以检查其他配置是否正常。"
         )
 
-    if out_dir is None:
-        out_dir = new_run_dir(settings.run_dir, label="workflow")
+    run_dir = _make_run_dir(out_dir, settings)
+    configure_logging(run_dir, verbose=verbose, quiet=quiet)
 
-    configure_logging(out_dir, verbose=verbose, quiet=quiet)
+    user_supplied = bool(code.strip())
 
     console.print("[bold]多 Agent 工作流[/bold]  [dim]编码 → 审查 → 修复[/dim]")
-    console.print(f"[dim]需求：{requirement}[/dim]")
+    if user_supplied:
+        console.print(
+            f"[dim]代码来源：你自己提供（{len(code.splitlines())} 行）"
+            "—— 跳过编码 Agent，直接从审查开始[/dim]"
+        )
+        if requirement.strip():
+            console.print(f"[dim]需求说明：{requirement}[/dim]")
+    else:
+        console.print(f"[dim]需求：{requirement}[/dim]")
     console.print(f"[dim]最多修 {max_rounds} 轮[/dim]\n")
 
     state = run_workflow(
         requirement,
-        run_id=out_dir.name,
+        code=code,
+        run_id=run_dir.name,
         max_rounds=max_rounds,
-        out_dir=out_dir,
+        out_dir=run_dir,
     )
 
     report = state.get("report")
@@ -91,12 +124,12 @@ def run(
         render_console(report, console)
 
     if "md" in formats:
-        path = out_dir / "workflow-report.md"
+        path = run_dir / "workflow-report.md"
         path.write_text(render_markdown(report), encoding="utf-8")
         console.print(f"[dim]文字报告：{path}[/dim]")
 
     # JSON 总是写：它是给程序读的那一份，也方便以后做统计。
-    json_path = out_dir / "workflow-report.json"
+    json_path = run_dir / "workflow-report.json"
     json_path.write_text(
         json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -104,7 +137,7 @@ def run(
     if "json" in formats:
         console.print(f"[dim]数据报告：{json_path}[/dim]")
 
-    console.print(f"[dim]本次运行的产物都在：{out_dir}[/dim]\n")
+    console.print(f"[dim]本次运行的产物都在：{run_dir}[/dim]\n")
     return report
 
 
@@ -118,6 +151,7 @@ def render_console(report: WorkflowReport, console: Console | None = None) -> No
     console = console or Console()
 
     _render_timeline(report, console)
+    _render_diffs(report, console)
     _render_verdict(report, console)
 
     if report.remaining:
@@ -134,24 +168,69 @@ def render_console(report: WorkflowReport, console: Console | None = None) -> No
 
 
 def _render_timeline(report: WorkflowReport, console: Console) -> None:
-    """执行日志：每一步做了什么，按顺序列出来。"""
+    """执行日志：谁读了什么、写了什么、做了什么。
+
+    「读 → 写」那一列就是 **Agent 之间通信的直接证据**：三个 Agent 不直接
+    对话，全靠共享状态传数据，所以这一列列出来，协作过程就是看得见的。
+    """
     if not report.steps:
         return
 
     table = Table(title="执行过程", show_header=True, header_style="bold")
     table.add_column("轮次", justify="center", style="dim", no_wrap=True)
-    table.add_column("节点", no_wrap=True)
-    table.add_column("做了什么")
+    table.add_column("谁", no_wrap=True)
+    table.add_column("读 → 写", no_wrap=True, style="cyan")
+    # overflow="fold"：窗口窄的时候换行，而不是把后半句截成省略号。
+    table.add_column("做了什么", overflow="fold")
 
     for step in report.steps:
         label = "初始" if step.round == 0 else f"第 {step.round} 轮"
+        flow = f"{step.reads or '—'} → {step.writes or '—'}"
+
         text = Text(step.summary)
         if step.detail:
             text.append(f"\n{step.detail}", style="dim")
-        table.add_row(label, step.node, text)
+
+        table.add_row(label, step.node, flow, text)
 
     console.print(table)
     console.print()
+
+
+def _render_diffs(report: WorkflowReport, console: Console) -> None:
+    """把每一轮改动的代码摆出来。
+
+    光说「修复完成」看不出 Agent 到底动了什么。差异摆出来，
+    「AI 改了代码」才是眼睛能看到的、可以核实的事。
+    """
+    changed = [step for step in report.steps if step.diff]
+    if not changed:
+        return
+
+    console.print("[bold]代码改动[/bold]")
+    console.print()
+
+    for step in changed:
+        console.print(f"[bold]第 {step.round} 轮修复[/bold]  [dim]改动 {step.changed_lines} 行[/dim]")
+        console.print(_colourise_diff(step.diff))
+        console.print()
+
+
+def _colourise_diff(diff_text: str) -> Text:
+    """给 diff 上色：新增绿、删除红、文件头灰。"""
+    text = Text()
+    for line in diff_text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            text.append(line + "\n", style="dim")
+        elif line.startswith("+"):
+            text.append(line + "\n", style="green")
+        elif line.startswith("-"):
+            text.append(line + "\n", style="red")
+        elif line.startswith("@@"):
+            text.append(line + "\n", style="cyan")
+        else:
+            text.append(line + "\n")
+    return text
 
 
 def _render_verdict(report: WorkflowReport, console: Console) -> None:
@@ -191,7 +270,9 @@ def _render_stats(report: WorkflowReport, console: Console) -> None:
     table.add_column()
 
     rounds = f"{report.rounds_used} 轮"
-    if report.rounds_used >= report.max_rounds:
+    # 「已达上限」只在**真的因此停下**时才说。刚好在第 N 轮修干净、
+    # 而 N 又正好等于上限时，说「已达上限」会让人误以为是没修完被强行掐断。
+    if report.rounds_used >= report.max_rounds and report.remaining:
         rounds += "（已达上限）"
     table.add_row("修复轮数", rounds)
 
@@ -234,20 +315,43 @@ def _render_stats(report: WorkflowReport, console: Console) -> None:
 def render_markdown(report: WorkflowReport) -> str:
     """Markdown 版报告，可以直接当交付物。"""
     lines: list[str] = ["# 多 Agent 工作流报告", ""]
-    lines.append("## 需求")
-    lines.append("")
-    lines.append(report.requirement)
-    lines.append("")
+
+    if report.requirement.strip():
+        lines.append("## 需求")
+        lines.append("")
+        lines.append(report.requirement)
+        lines.append("")
 
     lines.append("## 执行过程")
     lines.append("")
-    lines.append("| 轮次 | 节点 | 做了什么 |")
-    lines.append("|---|---|---|")
+    lines.append("「读 → 写」这一列是 Agent 之间通信的记录：三个 Agent 不直接对话，")
+    lines.append("全靠共享状态传递数据。")
+    lines.append("")
+    lines.append("| 轮次 | 谁 | 读 → 写 | 做了什么 |")
+    lines.append("|---|---|---|---|")
     for step in report.steps:
         label = "初始" if step.round == 0 else f"第 {step.round} 轮"
+        flow = f"{step.reads or '—'} → {step.writes or '—'}"
         detail = f"<br><sub>{step.detail}</sub>" if step.detail else ""
-        lines.append(f"| {label} | {step.node} | {step.summary}{detail} |")
+        lines.append(f"| {label} | {step.node} | {flow} | {step.summary}{detail} |")
     lines.append("")
+
+    changed = [step for step in report.steps if step.diff]
+    if changed:
+        lines.append("## 代码改动")
+        lines.append("")
+        lines.append("每一轮修复实际改了什么：")
+        lines.append("")
+        for step in changed:
+            lines.append(f"### 第 {step.round} 轮修复（改动 {step.changed_lines} 行）")
+            lines.append("")
+            if step.detail:
+                lines.append(step.detail)
+                lines.append("")
+            lines.append("```diff")
+            lines.append(step.diff.rstrip())
+            lines.append("```")
+            lines.append("")
 
     lines.append("## 结果")
     lines.append("")

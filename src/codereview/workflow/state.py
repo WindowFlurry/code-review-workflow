@@ -57,14 +57,23 @@ def is_actionable(finding: VerifiedFinding) -> bool:
 class WorkflowStep(BaseModel):
     """一次状态变化，构成执行日志。
 
-    作业二的 PPT 把「执行日志与状态追踪」列为推荐项。这个结构就是它：
-    每一步做了什么、发生在第几轮，都记下来，最后在报告里按时间顺序展示。
+    作业二的 PPT 把「执行日志与状态追踪」列为推荐项。这个结构就是它。
+
+    ``reads`` / ``writes`` 这两个字段是**给「Agent 通信」留证据的**：
+    Agent 之间不直接对话，全靠共享状态传递数据，所以「谁读了什么、谁写了什么」
+    就是它们的通信记录。把这两个字段打印出来，协作过程就是看得见的。
     """
 
     round: int = Field(description="第几轮。编码固定是第 0 轮。")
-    node: str = Field(description="哪个节点写的，中文名。")
+    node: str = Field(description="哪个 Agent 干的，中文名。")
+    reads: str = Field(default="", description="从共享状态读了什么。")
+    writes: str = Field(default="", description="往共享状态写了什么。")
     summary: str = Field(description="一句话说明这一步做了什么。")
     detail: str = Field(default="", description="补充信息，比如报了几条问题。")
+    #: 这一步改动代码的前后对比（unified diff）。只有修复步骤会有。
+    diff: str = Field(default="", description="代码改动对比，没有改动则为空。")
+    #: 改了几行（新增 + 删除）。用来在摘要里一眼看出改动规模。
+    changed_lines: int = Field(default=0, description="改动行数。")
 
 
 class RoundSummary(BaseModel):
@@ -145,8 +154,28 @@ def empty_workflow_state(
     out_dir: str = "",
     run_id: str = "workflow",
     max_rounds: int = 3,
+    initial_code: str = "",
 ) -> WorkflowState:
-    """建一个初始状态。"""
+    """建一个初始状态。
+
+    ``initial_code`` 非空时表示「代码是用户自己写的」——状态里已经有代码了，
+    图的入口会直接跳到审查，跳过编码 Agent。这条路径下参与协作的是
+    审查和修复两个 Agent。
+    """
+    steps = []
+    if initial_code.strip():
+        # 代码是用户自己写的。记一笔，这样执行日志能看出这一轮的「代码」
+        # 不是 Agent 产出的，而是流程的输入。
+        steps.append(
+            WorkflowStep(
+                round=0,
+                node="你（提供代码）",
+                reads="—",
+                writes="代码",
+                summary=f"读入你提供的代码，共 {len(initial_code.splitlines())} 行",
+            )
+        )
+
     return WorkflowState(
         requirement=requirement,
         workspace=workspace,
@@ -154,11 +183,11 @@ def empty_workflow_state(
         max_rounds=max_rounds,
         run_id=run_id,
         started_at=datetime.now(),
-        code="",
+        code=initial_code,
         findings=[],
         round=0,
         stop_reason="",
-        steps=[],
+        steps=steps,
         rounds=[],
         usage=[],
         errors=[],

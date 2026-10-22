@@ -319,25 +319,60 @@ def review(
 
 @app.command()
 def workflow(
-    requirement: Annotated[str, typer.Argument(help="用一句自然语言描述你要什么。")],
+    requirement: Annotated[str, typer.Argument(help="需求描述，或者你提供的代码文件路径。")] = "",
+    code: Annotated[Path | None, typer.Option("--code", help="你自己写的代码文件；给了就跳过编码 Agent。")] = None,
     max_rounds: Annotated[int, typer.Option("--max-rounds", help="最多修几轮。")] = 3,
-    out: Annotated[Path | None, typer.Option(help="产物目录。")] = None,
+    out: Annotated[Path | None, typer.Option(help="产物目录的父目录。")] = None,
     formats: Annotated[str, typer.Option(help="逗号分隔：console,md,json")] = "console,md",
     quiet: Annotated[bool, typer.Option("-q", "--quiet", help="只打印报告。")] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
 ) -> None:
     """跑一次「编码 → 审查 → 修复」多 Agent 工作流。
 
-    你给一句需求，编码 Agent 写出代码，审查 Agent（复用作业一）挑毛病，
-    修复 Agent 按报告改，然后回到审查 —— 直到没有高危问题或到达轮数上限。
+    **两种用法**：
 
-    例：codereview workflow "写一个函数，判断字符串是不是回文"
+    1. 让 AI 写代码 —— 给一句需求，编码 Agent 写、审查 Agent 挑毛病、
+       修复 Agent 改，改完再送回审查。
+
+           codereview workflow "写一个函数，判断字符串是不是回文"
+
+    2. 审你自己写的代码 —— 用 --code 指定文件，跳过编码 Agent，
+       直接从审查开始。这条路径下参与协作的是审查和修复两个 Agent。
+
+           codereview workflow --code 我的代码.py
+
+    每次运行都会在产物目录下新建一个带时间戳的子目录，互不干扰。
     """
     from .workflow.runner import run as run_workflow_cli
+
+    source = ""
+    if code is not None:
+        try:
+            source = code.read_text(encoding="utf-8")
+        except OSError as exc:
+            _fail(f"读不到这个文件：{code}\n{exc}")
+        except UnicodeDecodeError:
+            # 工作流要拿它去审查，编码不对的话后面每一步都看不清楚。
+            _fail(f"这个文件不是 UTF-8 编码，读不了：{code}")
+    elif requirement and requirement.endswith(".py") and Path(requirement).is_file():
+        # 顺手支持「把文件路径直接当参数传」，不用记 --code 这个选项。
+        try:
+            source = Path(requirement).read_text(encoding="utf-8")
+            requirement = ""
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    if not source and not requirement.strip():
+        _fail(
+            "要给点什么才行。两种用法：\n"
+            '  · 让 AI 写：codereview workflow "写一个函数，判断是不是回文"\n'
+            "  · 审你写的：codereview workflow --code 你的文件.py"
+        )
 
     try:
         run_workflow_cli(
             requirement,
+            code=source,
             max_rounds=max_rounds,
             out_dir=out,
             formats=[f.strip() for f in formats.split(",") if f.strip()],

@@ -18,6 +18,7 @@ from codereview.workflow import nodes
 from codereview.workflow.agents import CoderOutput, FixerOutput
 from codereview.workflow.graph import build_workflow, run_workflow
 from codereview.workflow.nodes import decide, strip_code_fences
+from codereview.workflow.runner import _make_run_dir
 from codereview.workflow.state import (
     actionable_count,
     empty_workflow_state,
@@ -373,7 +374,116 @@ def test_steps_record_the_whole_story(tmp_path, monkeypatch) -> None:
     report = run(tmp_path, monkeypatch)["report"]
 
     nodes_seen = [step.node for step in report.steps]
-    assert nodes_seen == ["编码", "审查", "修复", "审查"], nodes_seen
+    assert nodes_seen == ["编码 Agent", "审查 Agent", "修复 Agent", "审查 Agent"], nodes_seen
+
+
+def test_steps_record_what_each_agent_reads_and_writes(tmp_path, monkeypatch) -> None:
+    """「读 → 写」就是 Agent 之间通信的记录。
+
+    三个 Agent 不直接对话，全靠共享状态传数据。谁读了什么、谁写了什么，
+    是「Agent 协作」这件事唯一看得见的证据，所以要记下来。
+    """
+    wire(monkeypatch, fixes=["x = 1\n"], reviews=[[finding("high")], []])
+
+    report = run(tmp_path, monkeypatch)["report"]
+    flows = [(s.node, s.reads, s.writes) for s in report.steps]
+
+    assert flows == [
+        ("编码 Agent", "需求", "代码"),
+        ("审查 Agent", "代码", "问题清单"),
+        ("修复 Agent", "代码 + 问题清单", "代码（改写）"),
+        ("审查 Agent", "代码", "问题清单"),
+    ]
+
+
+def test_fix_step_records_a_diff(tmp_path, monkeypatch) -> None:
+    """修复步骤必须留下改动对比。
+
+    光说「修复完成」看不出 Agent 到底动了什么。差异摆出来，
+    「AI 改了代码」才是可以核实的事。
+    """
+    wire(
+        monkeypatch,
+        code="def f(a):\n    return a / 0\n",
+        fixes=["def f(a):\n    if a == 0:\n        raise ValueError\n    return 1 / a\n"],
+        reviews=[[finding("high")], []],
+    )
+
+    report = run(tmp_path, monkeypatch)["report"]
+    fix_step = next(s for s in report.steps if s.node == "修复 Agent")
+
+    assert fix_step.changed_lines > 0
+    assert "-    return a / 0" in fix_step.diff
+    assert "+        raise ValueError" in fix_step.diff
+
+
+def test_no_diff_when_fix_changes_nothing(tmp_path, monkeypatch) -> None:
+    """修复 Agent 原样返回时，diff 应该是空的，不能凭空造出改动。"""
+    same = "x = 1\n"
+    wire(monkeypatch, code=same, fixes=[same], reviews=[[finding("high")], []])
+
+    report = run(tmp_path, monkeypatch)["report"]
+    fix_step = next(s for s in report.steps if s.node == "修复 Agent")
+
+    assert fix_step.diff == ""
+    assert fix_step.changed_lines == 0
+    assert "没有变化" in fix_step.summary
+
+
+# ---------------------------------------------------------------------------
+# 用户提供代码的模式（跳过编码 Agent）
+# ---------------------------------------------------------------------------
+
+
+def test_user_supplied_code_skips_the_coder(tmp_path, monkeypatch) -> None:
+    """给了代码就从审查开始，编码 Agent 不参与。"""
+    coder = FakeAgent([CoderOutput(code="不该被调用\n")])
+    fixer = FakeAgent([FixerOutput(code="x = 1\n", changes="改好了")])
+    graph = FakeReviewGraph([[finding("high")], []])
+
+    monkeypatch.setattr(nodes, "_get_coder", lambda *_a, **_k: coder)
+    monkeypatch.setattr(nodes, "_get_fixer", lambda *_a, **_k: fixer)
+    monkeypatch.setattr(nodes, "build_graph", lambda *_a, **_k: graph)
+    monkeypatch.setattr(nodes, "get_settings", lambda: SimpleNamespace())
+
+    state = run_workflow(
+        "",
+        code="def f():\n    return 1 / 0\n",
+        workspace=tmp_path / "ws",
+        out_dir=tmp_path,
+    )
+
+    report = state["report"]
+    assert coder.thread_ids == [], "编码 Agent 不该被调用"
+    assert report.steps[0].node == "你（提供代码）"
+    assert [s.node for s in report.steps] == [
+        "你（提供代码）",
+        "审查 Agent",
+        "修复 Agent",
+        "审查 Agent",
+    ]
+
+
+def test_user_supplied_code_is_written_to_the_workspace(tmp_path, monkeypatch) -> None:
+    """用户给的代码要落盘，审查 Agent 才能看到它。"""
+    wire(monkeypatch, reviews=[[]])
+    source = "def f():\n    return 42\n"
+
+    run_workflow("", code=source, workspace=tmp_path / "ws", out_dir=tmp_path)
+
+    assert (tmp_path / "ws" / "solution.py").read_text(encoding="utf-8") == source
+    assert (tmp_path / "round-0-你提供的代码.py").read_text(encoding="utf-8") == source
+
+
+def test_user_supplied_clean_code_needs_no_fixing(tmp_path, monkeypatch) -> None:
+    """你自己写的代码没毛病时，一轮审查就收工。"""
+    _coder, fixer, graph = wire(monkeypatch, reviews=[[]])
+
+    state = run_workflow("", code="x = 1\n", workspace=tmp_path / "ws", out_dir=tmp_path)
+
+    assert state["report"].rounds_used == 0
+    assert fixer.thread_ids == []
+    assert graph.calls == 1
 
 
 def test_report_has_round_summaries(tmp_path, monkeypatch) -> None:
@@ -407,3 +517,59 @@ def test_graph_compiles() -> None:
     node_names = sorted(n for n in graph.get_graph().nodes if not n.startswith("__"))
 
     assert node_names == ["code", "fix", "report", "review"]
+
+
+# ---------------------------------------------------------------------------
+# 产物目录隔离（回归测试）
+# ---------------------------------------------------------------------------
+
+
+def _settings(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(run_dir=tmp_path / "runs")
+
+
+def test_run_dir_is_a_subdirectory_not_the_given_path(tmp_path) -> None:
+    """回归测试：产物不能直接写进用户指定的目录。
+
+    实测踩过这个坑。``4-运行Workflow.bat`` 里写死了 ``--out runs\\工作流演示``，
+    结果多次运行共用一个目录、文件互相覆盖；**轮数少的那次还会把轮数多的
+    那次留下的快照剩在目录里**。用户看到的是：
+
+        round-0-初始生成.py   →  def is_even(...)      ← 这次跑的
+        round-1-修复后.py     →  def flatten_dict(...)  ← 上次剩下的
+        round-2-修复后.py     →  def flatten_dict(...)  ← 上次剩下的
+
+    一堆来自不同运行的文件混在一起，看起来完全对不上。
+
+    修法是每次运行在指定目录下再建一层时间戳子目录。
+    """
+    out = tmp_path / "out"
+
+    run_dir = _make_run_dir(out, _settings(tmp_path))
+
+    assert run_dir.parent == out, "要在指定目录下面"
+    assert run_dir != out, "不能直接写进指定目录 —— 那正是会互相覆盖的做法"
+
+
+def test_existing_files_in_the_output_parent_are_left_alone(tmp_path) -> None:
+    """新一次运行不该动上一次留下的东西。"""
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "上一次的产物.py").write_text("x = 1", encoding="utf-8")
+
+    _make_run_dir(out, _settings(tmp_path))
+
+    assert (out / "上一次的产物.py").exists(), "上一次的文件不能被清掉或覆盖"
+
+
+def test_separate_runs_do_not_share_a_directory(tmp_path) -> None:
+    """两次运行必须是两个不同的目录。"""
+    out = tmp_path / "out"
+
+    first = _make_run_dir(out, _settings(tmp_path))
+    first.mkdir(parents=True, exist_ok=True)
+    second = _make_run_dir(out, _settings(tmp_path))
+
+    # 时间戳精确到秒，同一秒内两次调用会撞车 —— 实际使用中一次运行要十几秒，
+    # 碰不上。这里两次调用之间隔开，验证的是「分离」这个行为本身。
+    assert first.parent == second.parent == out

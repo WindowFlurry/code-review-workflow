@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from datetime import datetime
@@ -88,6 +89,51 @@ def write_solution(workspace: Path, code: str) -> Path:
     return target
 
 
+def make_diff(old: str, new: str, filename: str = SOLUTION_FILENAME) -> tuple[str, int]:
+    """算出改前改后的差异。
+
+    返回 ``(diff 文本, 改动行数)``。没有变化时 diff 为空。
+
+    这是「AI 改代码」最直接的证据 —— 光说「修复完成」看不出它到底动了什么，
+    把差异摆出来才看得见。
+    """
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+
+    diff_lines = list(
+        difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"{filename}（改前）",
+            tofile=f"{filename}（改后）",
+            # 只要 2 行上下文：够看清改动落在哪个函数里，又不会把整个文件刷屏。
+            n=2,
+        )
+    )
+    if not diff_lines:
+        return "", 0
+
+    # 数一下真正变化的内容行，不算 diff 自己的 +++ / --- 头。
+    changed = sum(
+        1
+        for line in diff_lines
+        if line[:1] in "+-" and not line.startswith(("+++", "---"))
+    )
+    return "".join(diff_lines), changed
+
+
+def seed_workspace(workspace: Path, out_dir: Path, code: str) -> None:
+    """把用户提供的代码放进工作目录，并留一份初始快照。
+
+    和工作流自己写盘走的是同一套逻辑 —— 差别只是这份代码的来源是用户而不是
+    Agent。写进去之后，审查 Agent 看到的就是一份普通的待审文件。
+    """
+    write_solution(workspace, code)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "round-0-你提供的代码.py").write_text(code, encoding="utf-8")
+
+
 def _snapshot(state: WorkflowState, code: str, round_no: int) -> None:
     """在产物目录留一份当轮代码。
 
@@ -141,7 +187,9 @@ def code_node(state: WorkflowState) -> dict:
         logger.exception("编码 Agent 失败")
         return {
             "code": "",
-            "steps": [WorkflowStep(round=0, node="编码", summary=f"失败：{exc}")],
+            "steps": [
+                WorkflowStep(round=0, node="编码 Agent", reads="需求", summary=f"失败：{exc}")
+            ],
             "errors": [f"编码 Agent 失败：{exc}"],
             "usage": [],
         }
@@ -150,7 +198,9 @@ def code_node(state: WorkflowState) -> dict:
     if output is None or not output.code.strip():
         return {
             "code": "",
-            "steps": [WorkflowStep(round=0, node="编码", summary="没有产出可用代码")],
+            "steps": [
+                WorkflowStep(round=0, node="编码 Agent", reads="需求", summary="没有产出可用代码")
+            ],
             "errors": ["编码 Agent 没有返回代码"],
             "usage": [_usage_of(result)],
         }
@@ -166,7 +216,9 @@ def code_node(state: WorkflowState) -> dict:
         "steps": [
             WorkflowStep(
                 round=0,
-                node="编码",
+                node="编码 Agent",
+                reads="需求",
+                writes="代码",
                 summary=f"生成代码 {len(code.splitlines())} 行，已写入 {SOLUTION_FILENAME}",
                 detail=output.notes,
             )
@@ -213,7 +265,11 @@ def review_node(state: WorkflowState) -> dict:
         # 审查失败时返回空清单，让流程走到报告节点收尾，而不是在循环里打转。
         return {
             "findings": [],
-            "steps": [WorkflowStep(round=round_no, node="审查", summary=f"失败：{exc}")],
+            "steps": [
+                WorkflowStep(
+                    round=round_no, node="审查 Agent", reads="代码", summary=f"失败：{exc}"
+                )
+            ],
             "errors": [f"审查失败：{exc}"],
             "usage": [],
         }
@@ -245,7 +301,9 @@ def review_node(state: WorkflowState) -> dict:
         "steps": [
             WorkflowStep(
                 round=round_no,
-                node="审查",
+                node="审查 Agent",
+                reads="代码",
+                writes="问题清单",
                 summary=f"第 {round_no + 1} 轮审查完成，发现 {len(findings)} 条问题",
                 detail="；".join(detail_parts),
             )
@@ -351,7 +409,14 @@ def fix_node(state: WorkflowState) -> dict:
         logger.exception("修复 Agent 失败")
         return {
             "round": round_no,
-            "steps": [WorkflowStep(round=round_no, node="修复", summary=f"失败：{exc}")],
+            "steps": [
+                WorkflowStep(
+                    round=round_no,
+                    node="修复 Agent",
+                    reads="代码 + 问题清单",
+                    summary=f"失败：{exc}",
+                )
+            ],
             "errors": [f"修复 Agent 失败：{exc}"],
             "usage": [],
         }
@@ -360,16 +425,26 @@ def fix_node(state: WorkflowState) -> dict:
     if output is None or not output.code.strip():
         return {
             "round": round_no,
-            "steps": [WorkflowStep(round=round_no, node="修复", summary="没有产出可用代码")],
+            "steps": [
+                WorkflowStep(
+                    round=round_no,
+                    node="修复 Agent",
+                    reads="代码 + 问题清单",
+                    summary="没有产出可用代码",
+                )
+            ],
             "errors": ["修复 Agent 没有返回代码"],
             "usage": [_usage_of(result)],
         }
 
+    previous = state.get("code", "")
     code = strip_code_fences(output.code)
     write_solution(workspace, code)
     _snapshot(state, code, round_no)
 
-    logger.info("[修复] 第 %d 轮完成，%d 行", round_no, len(code.splitlines()))
+    diff, changed = make_diff(previous, code)
+
+    logger.info("[修复] 第 %d 轮完成，%d 行，改动 %d 行", round_no, len(code.splitlines()), changed)
 
     return {
         "code": code,
@@ -377,9 +452,17 @@ def fix_node(state: WorkflowState) -> dict:
         "steps": [
             WorkflowStep(
                 round=round_no,
-                node="修复",
-                summary=f"第 {round_no} 轮修复完成，代码 {len(code.splitlines())} 行",
+                node="修复 Agent",
+                reads="代码 + 问题清单",
+                writes="代码（改写）",
+                summary=(
+                    f"第 {round_no} 轮修复完成，改动 {changed} 行"
+                    if changed
+                    else f"第 {round_no} 轮修复完成，代码没有变化"
+                ),
                 detail=output.changes,
+                diff=diff,
+                changed_lines=changed,
             )
         ],
         "errors": [],
