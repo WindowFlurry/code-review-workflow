@@ -20,7 +20,7 @@ from rich.text import Text
 
 from ..config import Settings, get_settings
 from ..errors import ConfigError
-from ..logging_setup import configure_logging, new_run_dir
+from ..logging_setup import configure_logging, new_run_dir, prune_run_dirs
 from ..models.report import SEVERITY_COLOURS
 from ..report import labels
 from .graph import run_workflow
@@ -57,6 +57,7 @@ def run(
     formats: list[str] | None = None,
     verbose: bool = False,
     quiet: bool = False,
+    keep_runs: int = 10,
     settings: Settings | None = None,
     console: Console | None = None,
 ) -> WorkflowReport:
@@ -93,6 +94,12 @@ def run(
 
     run_dir = _make_run_dir(out_dir, settings)
     configure_logging(run_dir, verbose=verbose, quiet=quiet)
+
+    # 每次运行一个目录，不会互相覆盖，但目录只增不减。留最近 10 次足够对比，
+    # 更早的不清理的话，跑几十次之后 runs 里就全是文件夹了。
+    pruned = prune_run_dirs(run_dir.parent, keep=keep_runs)
+    for stale in pruned:
+        logger.debug("已清理旧运行目录：%s", stale)
 
     user_supplied = bool(code.strip())
 
@@ -179,7 +186,7 @@ def _render_timeline(report: WorkflowReport, console: Console) -> None:
     table = Table(title="执行过程", show_header=True, header_style="bold")
     table.add_column("轮次", justify="center", style="dim", no_wrap=True)
     table.add_column("谁", no_wrap=True)
-    table.add_column("读 → 写", no_wrap=True, style="cyan")
+    table.add_column("读 → 写", style="cyan")
     # overflow="fold"：窗口窄的时候换行，而不是把后半句截成省略号。
     table.add_column("做了什么", overflow="fold")
 
@@ -189,12 +196,22 @@ def _render_timeline(report: WorkflowReport, console: Console) -> None:
 
         text = Text(step.summary)
         if step.detail:
-            text.append(f"\n{step.detail}", style="dim")
+            text.append(f"\n{_short(step.detail)}", style="dim")
 
         table.add_row(label, step.node, flow, text)
 
     console.print(table)
     console.print()
+
+
+def _short(text: str, limit: int = 56) -> str:
+    """压成一行。
+
+    表格里塞进一整段「改了什么」，窗口一窄就会被折成十几行，整张表都没法看了。
+    详细内容在下面的「代码改动」里还会完整出现，这里只要一句提示。
+    """
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
 def _render_diffs(report: WorkflowReport, console: Console) -> None:

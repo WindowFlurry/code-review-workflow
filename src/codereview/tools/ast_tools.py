@@ -15,7 +15,7 @@ import ast
 import logging
 from pathlib import Path
 
-from ..models.lint import AstSummary, FunctionInfo
+from ..models.lint import AstSummary, DivisionRisk, FunctionInfo
 from .sandbox import read_text_safely, resolve_in_root
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ class _FunctionCollector(ast.NodeVisitor):
         self.functions: list[FunctionInfo] = []
         self.bare_excepts: list[int] = []
         self.mutable_defaults: list[str] = []
+        self.division_risks: list[DivisionRisk] = []
 
     # -- helpers ---------------------------------------------------------
 
@@ -61,6 +62,60 @@ class _FunctionCollector(ast.NodeVisitor):
             for child in ast.iter_child_nodes(current):
                 stack.append((child, depth + 1 if isinstance(child, _NESTING_NODES) else depth))
         return best
+
+    @staticmethod
+    def _param_names(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+        args = fn.args
+        names = {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs}
+        for extra in (args.vararg, args.kwarg):
+            if extra is not None:
+                names.add(extra.arg)
+        return names
+
+    @staticmethod
+    def _zero_checked_names(fn: ast.AST) -> set[str]:
+        """Names the function compares against literal zero, anywhere.
+
+        Deliberately coarse: *any* comparison with 0 counts as "the author
+        thought about it". A precise check would have to prove the guard
+        dominates the division, and a false positive here costs more (the
+        reviewer reports a bug that is already handled) than a miss.
+        """
+        checked: set[str] = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Compare):
+                parts = [node.left, *node.comparators]
+                has_zero = any(
+                    isinstance(part, ast.Constant)
+                    and isinstance(part.value, int)
+                    and not isinstance(part.value, bool)
+                    and part.value == 0
+                    for part in parts
+                )
+                if has_zero:
+                    checked.update(part.id for part in parts if isinstance(part, ast.Name))
+            elif (
+                isinstance(node, ast.UnaryOp)
+                and isinstance(node.op, ast.Not)
+                and isinstance(node.operand, ast.Name)
+            ):
+                checked.add(node.operand.id)
+        return checked
+
+    @staticmethod
+    def _walk_own_scope(fn: ast.AST):
+        """Walk *fn*'s body without descending into nested functions.
+
+        Nested defs are recorded separately by ``visit_FunctionDef``, so their
+        divisions would otherwise be attributed to the enclosing function.
+        """
+        stack = list(ast.iter_child_nodes(fn))
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+                continue
+            yield node
+            stack.extend(ast.iter_child_nodes(node))
 
     @staticmethod
     def _has_mutable_default(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -106,6 +161,27 @@ class _FunctionCollector(ast.NodeVisitor):
         )
         if self._has_mutable_default(node):
             self.mutable_defaults.append(node.name)
+
+        # `total / count` with no check on count is a guaranteed crash for
+        # count == 0. Left to the model it is a coin flip -- measured runs
+        # missed it roughly half the time -- so it is computed here instead.
+        params = self._param_names(node)
+        checked = self._zero_checked_names(node)
+        seen: set[str] = set()
+        for child in self._walk_own_scope(node):
+            if not isinstance(child, ast.BinOp) or not isinstance(child.op, ast.Div | ast.FloorDiv):
+                continue
+            divisor = child.right
+            if (
+                isinstance(divisor, ast.Name)
+                and divisor.id in params
+                and divisor.id not in checked
+                and divisor.id not in seen
+            ):
+                seen.add(divisor.id)
+                self.division_risks.append(
+                    DivisionRisk(function=node.name, divisor=divisor.id, line=child.lineno)
+                )
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:  # noqa: N802
         # A bare `except:` also catches KeyboardInterrupt and SystemExit.
@@ -182,6 +258,7 @@ def python_ast_summary(
         functions=collector.functions,
         bare_excepts=collector.bare_excepts,
         mutable_default_args=collector.mutable_defaults,
+        unguarded_divisions=collector.division_risks,
         has_main_guard=has_main_guard,
     )
 
@@ -261,6 +338,29 @@ def to_candidates(summary: AstSummary):
                 confidence=0.9,
                 source="ast",
                 rule_id="AST_MUTABLE_DEFAULT",
+            )
+        )
+
+    for risk in summary.unguarded_divisions:
+        candidates.append(
+            CandidateFinding(
+                category="bug",
+                severity="medium",
+                title=f"`{risk.function}()` 用参数 `{risk.divisor}` 做除数，没有防除零",
+                rationale=(
+                    f"`{risk.function}` 第 {risk.line} 行用 `{risk.divisor}` 当除数，"
+                    f"但整个函数里没有任何地方检查过 `{risk.divisor}` 是不是 0。"
+                    "调用方传 0 进来（比如列表为空时统计个数）就会抛 "
+                    "`ZeroDivisionError`，程序直接崩掉。"
+                ),
+                evidence=Evidence(path=summary.path, line_start=risk.line, line_end=risk.line),
+                suggested_fix=(
+                    f"if {risk.divisor} == 0:\n"
+                    f'    return 0.0  # 或者 raise ValueError("{risk.divisor} 不能为 0")'
+                ),
+                confidence=0.9,
+                source="ast",
+                rule_id="AST_ZERO_DIVISION",
             )
         )
 

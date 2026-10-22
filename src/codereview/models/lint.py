@@ -40,6 +40,19 @@ class FunctionInfo(BaseModel):
     nesting_depth: int = 0
 
 
+class DivisionRisk(BaseModel):
+    """A ``/`` or ``//`` whose divisor is a bare parameter with no zero check.
+
+    This is a *fact* about the syntax tree, not an opinion: nothing in the
+    function body compares that name against zero before dividing, so a call
+    with 0 raises ``ZeroDivisionError``.
+    """
+
+    function: str
+    divisor: str
+    line: int = Field(ge=1)
+
+
 class AstSummary(BaseModel):
     """Structural facts about a Python file.
 
@@ -62,6 +75,10 @@ class AstSummary(BaseModel):
     bare_excepts: list[int] = Field(default_factory=list)
     mutable_default_args: list[str] = Field(
         default_factory=list, description="Function names with a mutable default argument."
+    )
+    unguarded_divisions: list[DivisionRisk] = Field(
+        default_factory=list,
+        description="Divisions by a parameter that is never checked against zero.",
     )
     has_main_guard: bool = False
 

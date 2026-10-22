@@ -324,6 +324,7 @@ def workflow(
     max_rounds: Annotated[int, typer.Option("--max-rounds", help="最多修几轮。")] = 3,
     out: Annotated[Path | None, typer.Option(help="产物目录的父目录。")] = None,
     formats: Annotated[str, typer.Option(help="逗号分隔：console,md,json")] = "console,md",
+    keep: Annotated[int, typer.Option("--keep", help="最多保留几次运行记录。")] = 10,
     quiet: Annotated[bool, typer.Option("-q", "--quiet", help="只打印报告。")] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
 ) -> None:
@@ -378,9 +379,22 @@ def workflow(
             formats=[f.strip() for f in formats.split(",") if f.strip()],
             verbose=verbose,
             quiet=quiet,
+            keep_runs=keep,
         )
     except CodeReviewError as exc:
         _fail(str(exc))
+
+
+@app.command()
+def demo() -> None:
+    """回放一次录好的工作流运行。不调用 AI，不花钱。
+
+    这是示例演示用的：结果是事先用真模型跑出来存好的，渲染用的还是同一套代码。
+    想看现场跑，用 `codereview workflow`。
+    """
+    from .workflow.demo import replay
+
+    replay(console)
 
 
 @app.command()
@@ -409,7 +423,30 @@ def ask(
         _fail(str(exc))
 
 
+def _harden_streams() -> None:
+    """Make printing never crash, **without** changing the console encoding.
+
+    An earlier version forced UTF-8 here. That was right when the .bat switched
+    the console to codepage 65001, and wrong the moment it stopped: a standard
+    Chinese Windows console is cp936, so UTF-8 bytes show up as 乱码.
+
+    Python already picked the console's real encoding at startup. Keep it, and
+    only swap the error handler so an emoji from a model cannot kill a run.
+    """
+    import contextlib
+    import sys
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            # Detached or already-wrapped streams raise here; nothing useful to
+            # do about it, and failing would abort the whole command.
+            with contextlib.suppress(ValueError, OSError):
+                reconfigure(errors="replace")
+
+
 def main() -> None:
+    _harden_streams()
     configure_logging()
     app()
 

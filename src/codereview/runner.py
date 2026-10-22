@@ -16,7 +16,7 @@ from .agent.state import empty_state, total_usage
 from .config import Settings, get_settings
 from .errors import ConfigError
 from .llm.factory import describe_model
-from .logging_setup import configure_logging, new_run_dir
+from .logging_setup import configure_logging, new_run_dir, prune_run_dirs
 from .memory.checkpointer import get_checkpointer
 from .models.report import ReviewReport
 from .report import render_console, write_json, write_markdown
@@ -92,6 +92,10 @@ def run_review(
 
     run_dir = out_dir or new_run_dir(settings.run_dir, label=mode)
     configure_logging(run_dir, verbose=verbose, quiet=quiet)
+
+    # 和作业二同一条规则：每次一个目录，但只留最近 10 次，不然越攒越多。
+    if out_dir is None:
+        prune_run_dirs(settings.run_dir, keep=10)
 
     logger.info("review of %s starting (mode=%s, model=%s)", target, mode, describe_model(settings))
 

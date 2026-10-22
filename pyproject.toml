@@ -30,6 +30,10 @@ codereview = "codereview.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# 示例演示是录好的那次运行，打包时要一起带走。
+[tool.setuptools.package-data]
+codereview = ["workflow/demo_report.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

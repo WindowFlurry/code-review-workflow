@@ -22,21 +22,24 @@ from codereview.models.findings import (
 )
 from codereview.models.plan import FileTask, ReviewPlan
 
-# Contiguous lines 24-26 of buggy_repo/quality_issues.py:
-#   24: def divide(numerator, denominator):
-#   25:     """BUG 8: no zero check -- raises ZeroDivisionError on valid-looking input."""
-#   26:     return numerator / denominator
+# Contiguous lines 29-31 of buggy_repo/quality_issues.py:
+#   29: def average(values):
+#   30:     """BUG 9: same defect one level down, via divide()."""
+#   31:     return divide(sum(values), len(values))
 #
-# Deliberately a defect ruff does *not* catch. Using the `assert` defect instead
-# would make the finding collide with ruff's S101 and get deduplicated, which
-# tests dedup rather than the reviewer path.
+# Deliberately a defect *no deterministic tool* catches, so the test measures
+# the reviewer path rather than dedup. The previous choice, ``divide()`` itself,
+# stopped qualifying the moment AST_ZERO_DIVISION was added; ``name_of()`` does
+# not work either, because ruff's S110 sits on its `pass` line and merges.
+# BUG 8's own division is on line 26 and dedup only bridges two lines, so this
+# one survives on its own.
 REAL_SNIPPET = (
-    "def divide(numerator, denominator):\n"
-    '    """BUG 8: no zero check -- raises ZeroDivisionError on valid-looking input."""\n'
-    "    return numerator / denominator"
+    "def average(values):\n"
+    '    """BUG 9: same defect one level down, via divide()."""\n'
+    "    return divide(sum(values), len(values))"
 )
 REAL_PATH = "quality_issues.py"
-REAL_LINE_START = 24
+REAL_LINE_START = 29
 
 
 class _Structured:
@@ -90,7 +93,7 @@ def _candidate(line_start: int = REAL_LINE_START, snippet: str = REAL_SNIPPET) -
         evidence=Evidence(
             path=REAL_PATH,
             line_start=line_start,
-            line_end=line_start + 2,
+            line_end=line_start + len(snippet.splitlines()) - 1,
             snippet=snippet,
         ),
         confidence=0.8,

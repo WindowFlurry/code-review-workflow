@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -89,3 +91,43 @@ def new_run_dir(base: Path, *, label: str = "review") -> Path:
     run_dir = base / f"{stamp}-{label}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+#: Names of directories this project creates: ``20261022-091523`` or
+#: ``20261022-091523-workflow``. Anything else under ``runs/`` is left alone --
+#: pruning must never delete a folder the user made themselves.
+_RUN_DIR = re.compile(r"^\d{8}-\d{6}(?:-[A-Za-z0-9_-]+)?$")
+
+
+def prune_run_dirs(base: Path, *, keep: int = 10) -> list[Path]:
+    """Delete all but the newest *keep* run directories directly under *base*.
+
+    Every run gets its own folder (that is what stops two runs from overwriting
+    each other), which means the folder count only grows. Ten is enough to
+    compare recent runs; older ones are of no use and just clutter the disk.
+
+    Directories that do not match this project's own naming pattern are never
+    touched, so hand-made folders under ``runs/`` survive.
+    """
+    if keep < 0:
+        return []
+
+    base = Path(base)
+    if not base.is_dir():
+        return []
+
+    run_dirs = sorted(
+        (p for p in base.iterdir() if p.is_dir() and _RUN_DIR.match(p.name)),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+
+    removed: list[Path] = []
+    for stale in run_dirs[keep:]:
+        try:
+            shutil.rmtree(stale)
+        except OSError as exc:  # a locked file, a permission problem, ...
+            logging.getLogger(__name__).warning("清理旧运行目录失败：%s（%s）", stale, exc)
+            continue
+        removed.append(stale)
+    return removed
