@@ -278,7 +278,7 @@ python -m codereview workflow --code 示例代码\成绩统计.py
 
 ### 双击运行
 
-双击项目里的 **`4-运行Workflow.bat`**：
+双击项目里的 **`3-运行Workflow.bat`**：
 
 - 直接按回车 → 回放录好的示例，**不调用 AI、不花钱**（看流程长什么样）
 - 输入一段文字 → 当成需求，AI 现场写代码并审查
