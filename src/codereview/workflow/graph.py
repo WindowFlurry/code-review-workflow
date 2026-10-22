@@ -131,7 +131,7 @@ def run_workflow(
     workspace.mkdir(parents=True, exist_ok=True)
 
     if code.strip():
-        seed_workspace(workspace, out_dir, code)
+        seed_workspace(workspace, code)
         logger.info("工作流启动（代码由用户提供，%d 行）", len(code.splitlines()))
     else:
         logger.info("工作流启动：需求=%r，工作目录=%s", requirement[:40], workspace)

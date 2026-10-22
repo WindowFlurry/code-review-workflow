@@ -24,6 +24,7 @@ from ..logging_setup import configure_logging, new_run_dir, prune_run_dirs
 from ..models.report import SEVERITY_COLOURS
 from ..report import labels
 from .graph import run_workflow
+from .nodes import SOLUTION_FILENAME
 from .state import WorkflowReport, actionable_count, severe_count
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,24 @@ def _make_run_dir(out_dir: Path | None, settings: Settings) -> Path:
     run_dir = Path(out_dir) / stamp
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+def _flatten_workspace(run_dir: Path) -> None:
+    """把最终代码挪到产物目录根下，并删掉空掉的工作目录。
+
+    ``workspace/`` 是给审查 Agent 扫的临时目录，运行结束就没用了。
+    结果文件藏在一层子目录里，用户还得猜点哪个；挪出来之后，一次运行的
+    产物就是「一份代码 + 一份报告 + 一份日志」，一眼能看完。
+    """
+    final = run_dir / "workspace" / SOLUTION_FILENAME
+    if not final.is_file():
+        return
+
+    try:
+        final.replace(run_dir / SOLUTION_FILENAME)
+        (run_dir / "workspace").rmdir()
+    except OSError as exc:
+        logger.warning("整理产物目录失败（不影响结果）：%s", exc)
 
 
 def run(
@@ -126,6 +145,8 @@ def run(
     report = state.get("report")
     if report is None:
         raise RuntimeError("工作流结束但没有产出报告")
+
+    _flatten_workspace(run_dir)
 
     if "console" in formats:
         render_console(report, console)

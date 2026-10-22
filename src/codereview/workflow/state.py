@@ -123,9 +123,10 @@ class WorkflowState(TypedDict, total=False):
     # --- 输入 ---
     requirement: str
     workspace: str
-    #: 产物目录。和 workspace 分开：快照写在这里，不会被审查 Agent 扫到。
-    #: （如果把历史快照写进 workspace，下一轮审查会把它们当成待审代码一起看，
-    #: 报告里就会出现一堆「上一轮的旧文件」的问题。）
+    #: 产物目录（报告、日志）。和 workspace 分开：workspace 是审查 Agent 的
+    #: 扫描范围，报告之类的文件放进去会被当成待审代码一起扫。
+    #: 注意这里**不存中间轮次的代码**——只保留工作目录里最后一次写下的
+    #: solution.py，也就是最终结果。历史版本看报告里的 diff。
     out_dir: str
     max_rounds: int
     run_id: str

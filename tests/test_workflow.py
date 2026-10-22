@@ -3,7 +3,7 @@
 三个 Agent 全部用假的替换，所以整条流程——编码、审查、判断、修复、汇总——
 都能在**不联网、不花钱**的情况下跑完，包括循环和条件分支。
 
-只有模型的「判断」是假的；流程控制、状态传递、快照落盘、报告生成都是真代码。
+只有模型的「判断」是假的；流程控制、状态传递、代码落盘、报告生成都是真代码。
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from codereview.models.findings import Evidence, VerifiedFinding
 from codereview.workflow import nodes
 from codereview.workflow.agents import CoderOutput, FixerOutput
 from codereview.workflow.graph import build_workflow, run_workflow
-from codereview.workflow.nodes import decide, strip_code_fences
-from codereview.workflow.runner import _make_run_dir
+from codereview.workflow.nodes import SOLUTION_FILENAME, decide, strip_code_fences
+from codereview.workflow.runner import _flatten_workspace, _make_run_dir
 from codereview.workflow.state import (
     actionable_count,
     empty_workflow_state,
@@ -341,11 +341,12 @@ def test_fenced_code_still_gets_written_clean(tmp_path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snapshots_go_to_out_dir_not_workspace(tmp_path, monkeypatch) -> None:
-    """快照不能写进工作目录。
+def test_only_the_final_code_file_is_kept(tmp_path, monkeypatch) -> None:
+    """产物里只留最后那份代码，不保留每一轮的快照。
 
-    工作目录是审查 Agent 的扫描范围。历史版本放进去的话，下一轮审查会把
-    上一轮的旧文件也当成待审代码，报告里就会冒出一堆莫名其妙的问题。
+    以前每轮存一份 ``round-N-*.py``，跑几次之后目录里全是互相矛盾的中间版本，
+    看的人分不清哪个才是结果。历史版本在报告的 diff 里已经完整记着了，
+    磁盘上只留最终那一份就够了。
     """
     wire(
         monkeypatch,
@@ -356,11 +357,11 @@ def test_snapshots_go_to_out_dir_not_workspace(tmp_path, monkeypatch) -> None:
 
     run(tmp_path, monkeypatch)
 
-    workspace_files = sorted(p.name for p in (tmp_path / "ws").iterdir())
-    assert workspace_files == ["solution.py"], "工作目录里只能有待审的那一份代码"
-
-    snapshots = sorted(p.name for p in tmp_path.glob("round-*.py"))
-    assert len(snapshots) == 2, "初始生成 + 一轮修复，各留一份"
+    assert sorted(p.name for p in (tmp_path / "ws").iterdir()) == ["solution.py"]
+    assert list(tmp_path.glob("round-*.py")) == []
+    assert (tmp_path / "ws" / "solution.py").read_text(encoding="utf-8") == (
+        "def f():\n    return 2\n"
+    )
 
 
 def test_steps_record_the_whole_story(tmp_path, monkeypatch) -> None:
@@ -472,7 +473,7 @@ def test_user_supplied_code_is_written_to_the_workspace(tmp_path, monkeypatch) -
     run_workflow("", code=source, workspace=tmp_path / "ws", out_dir=tmp_path)
 
     assert (tmp_path / "ws" / "solution.py").read_text(encoding="utf-8") == source
-    assert (tmp_path / "round-0-你提供的代码.py").read_text(encoding="utf-8") == source
+    assert list(tmp_path.glob("round-*.py")) == [], "不再额外存一份初始快照"
 
 
 def test_user_supplied_clean_code_needs_no_fixing(tmp_path, monkeypatch) -> None:
@@ -497,8 +498,8 @@ def test_report_has_round_summaries(tmp_path, monkeypatch) -> None:
     assert report.rounds[1].findings_total == 0
 
 
-def test_final_code_matches_last_snapshot(tmp_path, monkeypatch) -> None:
-    """报告里的最终代码要和磁盘上的一致。"""
+def test_final_code_matches_the_file_on_disk(tmp_path, monkeypatch) -> None:
+    """报告里的最终代码要和磁盘上那份一致。"""
     wire(
         monkeypatch,
         code="x = 0\n",
@@ -510,6 +511,29 @@ def test_final_code_matches_last_snapshot(tmp_path, monkeypatch) -> None:
 
     on_disk = (tmp_path / "ws" / "solution.py").read_text(encoding="utf-8")
     assert report.final_code == on_disk
+
+
+def test_final_code_is_moved_out_of_the_workspace(tmp_path) -> None:
+    """最终代码要放在产物目录根下，不能藏在一层子目录里。"""
+    run_dir = tmp_path / "run"
+    (run_dir / "workspace").mkdir(parents=True)
+    (run_dir / "workspace" / SOLUTION_FILENAME).write_text("x = 1\n", encoding="utf-8")
+
+    _flatten_workspace(run_dir)
+
+    assert (run_dir / SOLUTION_FILENAME).read_text(encoding="utf-8") == "x = 1\n"
+    assert not (run_dir / "workspace").exists(), "临时工作目录应该被删掉"
+    assert sorted(p.name for p in run_dir.iterdir()) == [SOLUTION_FILENAME]
+
+
+def test_flatten_does_nothing_when_there_is_no_code(tmp_path) -> None:
+    """没产出代码（比如编码失败）时，不能因为找不到文件就崩。"""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    _flatten_workspace(run_dir)
+
+    assert list(run_dir.iterdir()) == []
 
 
 def test_graph_compiles() -> None:
@@ -533,11 +557,10 @@ def test_run_dir_is_a_subdirectory_not_the_given_path(tmp_path) -> None:
 
     实测踩过这个坑。``4-运行Workflow.bat`` 里写死了 ``--out runs\\工作流演示``，
     结果多次运行共用一个目录、文件互相覆盖；**轮数少的那次还会把轮数多的
-    那次留下的快照剩在目录里**。用户看到的是：
+    那次留下的文件剩在目录里**。用户看到的是：
 
-        round-0-初始生成.py   →  def is_even(...)      ← 这次跑的
-        round-1-修复后.py     →  def flatten_dict(...)  ← 上次剩下的
-        round-2-修复后.py     →  def flatten_dict(...)  ← 上次剩下的
+        workflow-report.md   →  这次的问题清单
+        solution.py          →  上次留下的代码
 
     一堆来自不同运行的文件混在一起，看起来完全对不上。
 

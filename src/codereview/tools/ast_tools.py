@@ -354,9 +354,11 @@ def to_candidates(summary: AstSummary):
                     "`ZeroDivisionError`，程序直接崩掉。"
                 ),
                 evidence=Evidence(path=summary.path, line_start=risk.line, line_end=risk.line),
+                # 修复 Agent 会照着这段抄。别在里面写「或者……」的备选，
+                # 它会把注释原样搬进代码里。
                 suggested_fix=(
                     f"if {risk.divisor} == 0:\n"
-                    f'    return 0.0  # 或者 raise ValueError("{risk.divisor} 不能为 0")'
+                    f'    raise ValueError("{risk.divisor} 不能为 0")'
                 ),
                 confidence=0.9,
                 source="ast",

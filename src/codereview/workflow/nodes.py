@@ -122,29 +122,13 @@ def make_diff(old: str, new: str, filename: str = SOLUTION_FILENAME) -> tuple[st
     return "".join(diff_lines), changed
 
 
-def seed_workspace(workspace: Path, out_dir: Path, code: str) -> None:
-    """把用户提供的代码放进工作目录，并留一份初始快照。
+def seed_workspace(workspace: Path, code: str) -> None:
+    """把用户提供的代码放进工作目录。
 
     和工作流自己写盘走的是同一套逻辑 —— 差别只是这份代码的来源是用户而不是
     Agent。写进去之后，审查 Agent 看到的就是一份普通的待审文件。
     """
     write_solution(workspace, code)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "round-0-你提供的代码.py").write_text(code, encoding="utf-8")
-
-
-def _snapshot(state: WorkflowState, code: str, round_no: int) -> None:
-    """在产物目录留一份当轮代码。
-
-    刻意写在 ``out_dir`` 而不是 ``workspace``：工作目录是审查 Agent 的扫描范围，
-    把历史版本放进去的话，下一轮审查会把上一轮的旧文件也当成待审代码，
-    报告里就会冒出一堆莫名其妙的问题。
-    """
-    out_dir = Path(state.get("out_dir") or state.get("workspace", "."))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    label = "round-0-初始生成" if round_no == 0 else f"round-{round_no}-修复后"
-    (out_dir / f"{label}.py").write_text(code, encoding="utf-8")
 
 
 def _extract(result: dict, schema):
@@ -207,7 +191,6 @@ def code_node(state: WorkflowState) -> dict:
 
     code = strip_code_fences(output.code)
     path = write_solution(workspace, code)
-    _snapshot(state, code, 0)
 
     logger.info("[编码] 完成，%d 行，写入 %s", len(code.splitlines()), path.name)
 
@@ -440,7 +423,6 @@ def fix_node(state: WorkflowState) -> dict:
     previous = state.get("code", "")
     code = strip_code_fences(output.code)
     write_solution(workspace, code)
-    _snapshot(state, code, round_no)
 
     diff, changed = make_diff(previous, code)
 
