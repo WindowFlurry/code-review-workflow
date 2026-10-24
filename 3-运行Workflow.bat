@@ -5,18 +5,8 @@ cd /d "%~dp0"
 set PYTHONPATH=%~dp0src
 set PYTHONUNBUFFERED=1
 
-if not exist ".venv\Scripts\python.exe" (
-    echo.
-    echo No Python environment found.
-    echo Run these two commands in this folder first:
-    echo     python -m venv .venv
-    echo     .venv\Scripts\pip install -r requirements.txt
-    echo.
-    echo See README.md section 0 for details.
-    echo.
-    pause
-    exit /b
-)
+call "%~dp0setup.bat"
+if errorlevel 1 exit /b
 
 ".venv\Scripts\python.exe" -m codereview workflow --interactive --quiet
 
