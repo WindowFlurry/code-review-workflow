@@ -9,7 +9,7 @@ if exist ".venv\Scripts\python.exe" exit /b 0
 echo.
 echo ============================================================
 echo   First run: setting up the Python environment.
-echo   Downloads dependencies; takes about 1-3 minutes.
+echo   Downloads about 40 MB of dependencies; takes a few minutes.
 echo ============================================================
 echo.
 
@@ -20,9 +20,23 @@ echo Creating .venv ...
 python -m venv .venv
 if not exist ".venv\Scripts\python.exe" goto VENV_FAILED
 
+set "PIP=.venv\Scripts\python.exe"
+
+rem Use a PyPI mirror by default: downloading from pypi.org can take many
+rem minutes in mainland China. This is only a default - if PIP_INDEX_URL is
+rem already set it is respected, and if the mirror fails the official index
+rem is tried instead.
+if not defined PIP_INDEX_URL set "PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
+
 echo Installing dependencies ...
-".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+"%PIP%" -m pip install --upgrade pip --quiet
+"%PIP%" -m pip install --prefer-binary -r requirements.txt
+if errorlevel 1 (
+    echo.
+    echo The mirror did not work, retrying with the official PyPI ...
+    set "PIP_INDEX_URL=https://pypi.org/simple"
+    "%PIP%" -m pip install --prefer-binary -r requirements.txt
+)
 if errorlevel 1 goto PIP_FAILED
 
 if not exist ".env" if exist ".env.example" copy ".env.example" ".env" >nul
