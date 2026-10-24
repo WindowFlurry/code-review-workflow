@@ -26,9 +26,10 @@ rich==15.0.0
 tenacity==9.1.4
 
 # --- optional web ui ---
-# Only `codereview web` needs this; the CLI and the .bat files do not.
-# Drop this line if you want a faster install.
-streamlit==1.64.0
+# `codereview web` is the only thing that needs Streamlit. It drags in pandas
+# and a big download, which doubles the first-run setup time for no benefit if
+# you only use the CLI and the .bat files. Install it on demand instead:
+#     pip install streamlit==1.64.0
 
 # --- dev ---
 pytest==9.1.1
