@@ -284,9 +284,13 @@ python -m codereview workflow --code 示例代码\成绩统计.py
 - 输入一段文字 → 当成需求，AI 现场写代码并审查
 - **把 `.py` 文件拖进窗口** → 自动走 `--code`，现场审你的代码
 
-> 这个 .bat 是 **GBK 编码，全程不切换代码页**。踩过的坑：切到 UTF-8 之后
-> cmd 会把后面的中文当 UTF-8 重新解析，出现乱码，严重时把 `if (...)` 的括号
-> 吃掉，窗口直接闪退。现在反过来——Python 也按 GBK 输出，两边一致。
+> `.bat` 只负责启动，**里面是纯 ASCII，没有任何中文**。所有中文提示都从
+> Python 输出（`workflow --interactive`）。
+>
+> 这么改是因为踩了两个坑：① 批处理文件里写中文就必须是 GBK，而 GitHub 网页
+> 按 UTF-8 渲染，点开全是乱码；② git 默认把 CRLF 转成 LF，别人从网页下载
+> ZIP 拿到的 .bat 是 LF 换行，cmd 会把它拆成一堆「不是内部或外部命令」。
+> 现在 `.gitattributes` 里写了 `*.bat -text`，仓库里存的就是原样的 CRLF。
 
 ### 其他选项
 

@@ -36,3 +36,7 @@ Thumbs.db
 # 打开 PPT/Word/Excel 时会产生一个 ~$ 开头的隐藏文件，文件被占用时
 # git 无法读取它，会导致整个 git add 失败。
 ~$*
+
+# ---- 本地表格 ----
+*.xlsx
+*.xls

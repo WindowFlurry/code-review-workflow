@@ -41,6 +41,11 @@ def _fail(message: str, code: int = 2) -> None:
     raise typer.Exit(code)
 
 
+def _clean_path_input(raw: str) -> str:
+    """去掉拖拽进来时 Windows 自动加的引号和多余空白。"""
+    return raw.strip().strip('"').strip("'").strip()
+
+
 # --------------------------------------------------------------------------
 # tools -- deterministic layer
 # --------------------------------------------------------------------------
@@ -291,6 +296,9 @@ def review(
     offline: Annotated[bool, typer.Option("--offline", help="Deterministic analysis only; no LLM.")] = False,
     quiet: Annotated[bool, typer.Option("-q", "--quiet", help="Print only the report.")] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
+    interactive: Annotated[
+        bool, typer.Option("-i", "--interactive", help="交互式：提示你拖入要审查的文件。")
+    ] = False,
 ) -> None:
     """Review a repository and write the report.
 
@@ -301,6 +309,21 @@ def review(
     code it is reviewing.
     """
     from .runner import run_review
+
+    if interactive:
+        console.print("[bold]代码审查助手[/bold]  [dim]审查你自己的代码[/dim]")
+        console.print("把文件夹或 `.py` 文件拖进这个窗口，然后按回车；也可以直接输入路径。")
+        console.print("[dim]留空直接回车 = 取消。[/dim]\n")
+        raw = _clean_path_input(console.input("  路径："))
+        if not raw:
+            console.print("没有输入，已取消。")
+            raise typer.Exit(0)
+        target = Path(raw)
+        if not target.exists():
+            _fail(f"找不到这个路径：{raw}\n检查一下是不是打错了，或者拖错了文件。")
+        thread = "mine"
+        if out is None:
+            out = Path("runs/我的审查")
 
     try:
         run_review(
@@ -318,6 +341,72 @@ def review(
 
 
 @app.command()
+def sample(
+    out: Annotated[Path | None, typer.Option(help="输出目录。")] = None,
+    quiet: Annotated[bool, typer.Option("-q", "--quiet", help="只打印报告。")] = False,
+) -> None:
+    """跑一遍自带的示例代码，看看效果（作业一）。
+
+    示例代码是故意写错的，用来演示「指出第几行、什么毛病、怎么改」。
+    """
+    from .runner import run_review
+
+    console.print("[bold]代码审查助手[/bold]  [dim]示例演示[/dim]")
+    console.print("正在检查自带的 `示例代码` 文件夹——里面是故意写错的代码，用来看效果。")
+    console.print("[dim]大约 10~30 秒，会用到 AI。[/dim]\n")
+
+    try:
+        run_review(
+            target=Path("示例代码"),
+            mode="graph",
+            thread_id="sample",
+            out_dir=out or Path("runs") / "示例代码演示",
+            formats=["console", "md", "json"],
+            offline=False,
+            quiet=quiet,
+            verbose=False,
+        )
+    except CodeReviewError as exc:
+        _fail(str(exc))
+
+    console.print("[dim]文字报告：runs\\示例代码演示\\report.md[/dim]")
+
+
+def _print_workflow_intro(console: Console) -> None:
+    """打印作业二的说明。
+
+    这些中文**放在 Python 里，不放在 .bat 里**。原因很实际：.bat 要能在中文
+    控制台正常显示就得是 GBK，而 GitHub 网页按 UTF-8 渲染，打开就是乱码。
+    现在 .bat 只负责启动（纯 ASCII），中文从这里输出，浏览器和命令行都正常。
+    """
+    lines = [
+        "",
+        "============================================================",
+        "   多 Agent 工作流    编码 → 审查 → 修复",
+        "============================================================",
+        "",
+        "  三个 Agent 各干一件事：",
+        "",
+        "    [编码 Agent]  读需求       写代码",
+        "    [审查 Agent]  读代码       写问题清单      ← 复用作一",
+        "    [修复 Agent]  读代码+清单  改写代码",
+        "         │",
+        "         └── 修完送回再审，直到没有问题为止",
+        "",
+        "============================================================",
+        "",
+        "  怎么用：",
+        "",
+        "   1. 直接按回车        看示例（回放一次真实运行的结果，不花钱）",
+        "   2. 输入一句需求      AI 现场写代码并审查（会花几分钱）",
+        "   3. 把 .py 文件拖进来  现场审查你自己的代码（会花几分钱）",
+        "",
+    ]
+    for line in lines:
+        console.print(line, markup=False)
+
+
+@app.command()
 def workflow(
     requirement: Annotated[str, typer.Argument(help="需求描述，或者你提供的代码文件路径。")] = "",
     code: Annotated[Path | None, typer.Option("--code", help="你自己写的代码文件；给了就跳过编码 Agent。")] = None,
@@ -327,6 +416,9 @@ def workflow(
     keep: Annotated[int, typer.Option("--keep", help="最多保留几次运行记录。")] = 10,
     quiet: Annotated[bool, typer.Option("-q", "--quiet", help="只打印报告。")] = False,
     verbose: Annotated[bool, typer.Option("-v", "--verbose")] = False,
+    interactive: Annotated[
+        bool, typer.Option("-i", "--interactive", help="交互式：回车看示例，输入需求或拖入文件现场跑。")
+    ] = False,
 ) -> None:
     """跑一次「编码 → 审查 → 修复」多 Agent 工作流。
 
@@ -345,6 +437,21 @@ def workflow(
     每次运行都会在产物目录下新建一个带时间戳的子目录，互不干扰。
     """
     from .workflow.runner import run as run_workflow_cli
+
+    if interactive:
+        _print_workflow_intro(console)
+        raw = _clean_path_input(console.input("  请选择（直接回车看示例）："))
+        if not raw:
+            # 回车 = 看示例。回放的是录好的真实运行，不调用 AI、不花钱。
+            from .workflow.demo import replay
+
+            replay(console)
+            return
+        candidate = Path(raw)
+        if candidate.is_file():
+            code = candidate
+        else:
+            requirement = raw
 
     source = ""
     if code is not None:
