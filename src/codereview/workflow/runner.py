@@ -179,6 +179,7 @@ def render_console(report: WorkflowReport, console: Console | None = None) -> No
     console = console or Console()
 
     _render_timeline(report, console)
+    _render_original(report, console)
     _render_diffs(report, console)
     _render_verdict(report, console)
 
@@ -233,6 +234,33 @@ def _short(text: str, limit: int = 56) -> str:
     """
     flat = " ".join(text.split())
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+def _render_original(report: WorkflowReport, console: Console) -> None:
+    """把「改之前」的那一版完整摆出来。
+
+    只有 diff 的话，没读过原文件的人得自己拼出上下文，根本判断不了改得对不对。
+    原始版本摊开放在这里，后面每一条 diff 才有参照。
+    """
+    if not report.original_code.strip():
+        return
+
+    title = (
+        "原始代码（你交进来的）"
+        if report.original_supplied
+        else "原始代码（编码 Agent 写出来的第一版）"
+    )
+    console.print(f"[bold]{title}[/bold]")
+    console.print(
+        Syntax(
+            report.original_code,
+            "python",
+            line_numbers=True,
+            word_wrap=True,
+            theme="ansi_dark",
+        )
+    )
+    console.print()
 
 
 def _render_diffs(report: WorkflowReport, console: Console) -> None:
@@ -373,6 +401,19 @@ def render_markdown(report: WorkflowReport) -> str:
         detail = f"<br><sub>{step.detail}</sub>" if step.detail else ""
         lines.append(f"| {label} | {step.node} | {flow} | {step.summary}{detail} |")
     lines.append("")
+
+    if report.original_code.strip():
+        lines.append("## 原始代码")
+        lines.append("")
+        lines.append(
+            "改之前的那一版（你交进来的）。" if report.original_supplied
+            else "改之前的那一版（编码 Agent 写出来的）。"
+        )
+        lines.append("")
+        lines.append("```python")
+        lines.append(report.original_code.rstrip())
+        lines.append("```")
+        lines.append("")
 
     changed = [step for step in report.steps if step.diff]
     if changed:

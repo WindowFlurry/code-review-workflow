@@ -196,6 +196,9 @@ def code_node(state: WorkflowState) -> dict:
 
     return {
         "code": code,
+        # 编码 Agent 写出来的第一版，也是「改之前」的那一版。
+        "original_code": code,
+        "original_supplied": False,
         "steps": [
             WorkflowStep(
                 round=0,
@@ -463,6 +466,8 @@ def report_node(state: WorkflowState) -> dict:
 
     report = WorkflowReport(
         requirement=state.get("requirement", ""),
+        original_code=state.get("original_code", ""),
+        original_supplied=state.get("original_supplied", False),
         final_code=state.get("code", ""),
         rounds_used=state.get("round", 0),
         max_rounds=state.get("max_rounds", 3),

@@ -90,6 +90,11 @@ class WorkflowReport(BaseModel):
     """工作流跑完之后交给用户看的东西。"""
 
     requirement: str
+    #: 改之前的那一版代码。用户提供的，或编码 Agent 写出来的第一版。
+    #: 没有它，「改了什么」只剩几段 diff，看不出原始文件长什么样。
+    original_code: str = ""
+    #: True 表示原始代码是用户交进来的（--code），False 表示编码 Agent 写的。
+    original_supplied: bool = False
     final_code: str
     rounds_used: int
     max_rounds: int
@@ -133,6 +138,9 @@ class WorkflowState(TypedDict, total=False):
     started_at: datetime
 
     # --- 流动的数据：Agent 之间就靠这几个字段传递 ---
+    #: 改之前的那一版，只读不写（编码节点写一次，之后不再动）。
+    original_code: str
+    original_supplied: bool
     code: str
     findings: list[VerifiedFinding]
     round: int
@@ -184,6 +192,8 @@ def empty_workflow_state(
         max_rounds=max_rounds,
         run_id=run_id,
         started_at=datetime.now(),
+        original_code=initial_code,
+        original_supplied=bool(initial_code.strip()),
         code=initial_code,
         findings=[],
         round=0,

@@ -498,6 +498,40 @@ def test_report_has_round_summaries(tmp_path, monkeypatch) -> None:
     assert report.rounds[1].findings_total == 0
 
 
+def test_report_keeps_the_original_code_the_user_supplied(tmp_path, monkeypatch) -> None:
+    """报告要留下「改之前」的那一版。
+
+    只有 diff 的话，没读过原文件的人拼不出上下文，也就判断不了改得对不对。
+    """
+    source = "def f():\n    return 1\n"
+    wire(
+        monkeypatch,
+        fixes=["def f():\n    return 2\n"],
+        reviews=[[finding("high")], []],
+    )
+
+    report = run_workflow("", code=source, workspace=tmp_path / "ws", out_dir=tmp_path)["report"]
+
+    assert report.original_code == source
+    assert report.original_supplied is True
+    assert report.final_code == "def f():\n    return 2\n"
+
+
+def test_report_keeps_the_coders_first_version(tmp_path, monkeypatch) -> None:
+    """代码是 AI 写的也一样：留下的应该是它的第一版，不是最后一版。"""
+    wire(
+        monkeypatch,
+        code="def f():\n    return 1\n",
+        fixes=["def f():\n    return 2\n"],
+        reviews=[[finding("high")], []],
+    )
+
+    report = run(tmp_path, monkeypatch)["report"]
+
+    assert report.original_code == "def f():\n    return 1\n"
+    assert report.original_supplied is False
+
+
 def test_final_code_matches_the_file_on_disk(tmp_path, monkeypatch) -> None:
     """报告里的最终代码要和磁盘上那份一致。"""
     wire(

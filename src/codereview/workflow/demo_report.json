@@ -73,5 +73,7 @@
   },
   "errors": [],
   "started_at": "2026-10-22T09:42:42.782794",
-  "finished_at": "2026-10-22T09:42:58.205099"
+  "finished_at": "2026-10-22T09:42:58.205099",
+  "original_code": "def add(a, b):\n    \"\"\"返回两个数的和。\"\"\"\n    result = a - b\n    return reslut\n\n\ndef average(total, count):\n    return total / count\n\n\nif __name__ == \"__main__\":\n    print(add(3, 5))\n    print(average(10, 2))\n",
+  "original_supplied": true
 }

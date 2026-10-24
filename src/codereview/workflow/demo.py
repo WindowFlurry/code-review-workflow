@@ -38,7 +38,8 @@ def replay(console: Console | None = None) -> WorkflowReport:
         "[yellow]注意：下面是一段事先跑好存下来的结果回放，"
         "不会调用 AI，也不花钱。[/yellow]"
     )
-    console.print("[dim]想看现场跑：输入一句需求，或者把 .py 文件拖进来。[/dim]\n")
+    console.print("[dim]想看现场跑：输入一句需求，或者把 .py 文件拖进来。[/dim]")
+    console.print("[dim]下面先列执行过程，再把「改之前的代码」和每一处改动摊开。[/dim]\n")
 
     from .runner import render_console
 
