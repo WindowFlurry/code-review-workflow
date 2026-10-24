@@ -4,7 +4,8 @@
 # The LangChain stack is pinned exactly. It is still churning: `create_react_agent`
 # was deprecated in favour of `create_agent`, and the DeepSeek model names were
 # retired. Loose pins there would silently change documented-but-gone APIs.
-# The rest are pinned to a known-good floor.
+# Everything else is pinned to the exact version that was tested, so a fresh
+# clone behaves the same as the machine this was developed on.
 
 # --- agent framework ---
 langchain==1.4.3
@@ -13,20 +14,21 @@ langchain-deepseek==1.1.1
 langgraph-checkpoint-sqlite==3.1.1
 
 # --- config / validation ---
-pydantic>=2.13
-pydantic-settings>=2.15
-python-dotenv>=1.2
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
 
 # --- cli / output ---
-typer>=0.27
-rich>=15.0
+typer==0.27.2
+rich==15.0.0
 
 # --- reliability ---
-tenacity>=9.1
+tenacity==9.1.4
 
 # --- optional web ui ---
-# Not needed for the CLI. Install with: pip install -r requirements.txt
-streamlit>=1.64
+# Only `codereview web` needs this; the CLI and the .bat files do not.
+# Drop this line if you want a faster install.
+streamlit==1.64.0
 
 # --- dev ---
-pytest>=9.0
+pytest==9.1.1
